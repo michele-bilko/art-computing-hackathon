@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Feed</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .camera-container {
+            width: 80%;
+            max-width: 800px;
+            background-color: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        #cameraFeed {
+            width: 100%;
+            display: block;
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        .error-message {
+            color: #d32f2f;
+            margin-top: 20px;
+            font-weight: bold;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="camera-container">
+        <video id="cameraFeed" autoplay playsinline></video>
+    </div>
+    <div class="controls">
+        <button id="startButton">Start Camera</button>
+        <button id="stopButton" disabled>Stop Camera</button>
+    </div>
+    <p class="error-message" id="errorMessage"></p>
+
+    <script>
+        const cameraFeed = document.getElementById('cameraFeed');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const errorMessage = document.getElementById('errorMessage');
+        
+        let stream = null;
+
+        // Function to start the camera
+        async function startCamera() {
+            try {
+                errorMessage.style.display = 'none';
+                
+                // Request access to the webcam
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user' },
+                    audio: false
+                });
+                
+                // Display the video stream
+                cameraFeed.srcObject = stream;
+                
+                // Update button states
+                startButton.disabled = true;
+                stopButton.disabled = false;
+            } catch (error) {
+                console.error('Error accessing the camera:', error);
+                errorMessage.textContent = 'Could not access the camera. Please ensure you have granted permission.';
+                errorMessage.style.display = 'block';
+            }
+        }
+
+        // Function to stop the camera
+        function stopCamera() {
+            if (stream) {
+                // Get all tracks and stop them
+                stream.getTracks().forEach(track => track.stop());
+                
+                // Clear the video source
+                cameraFeed.srcObject = null;
+                
+                // Reset stream variable
+                stream = null;
+                
+                // Update button states
+                startButton.disabled = false;
+                stopButton.disabled = true;
+            }
+        }
+
+        // Add event listeners to buttons
+        startButton.addEventListener('click', startCamera);
+        stopButton.addEventListener('click', stopCamera);
+    </script>
+</body>
+</html>

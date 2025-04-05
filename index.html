@@ -1,1 +1,487 @@
-<script src="https://unpkg.com/ml5@1/dist/ml5.js"></script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thanos Snap Effect</title>
+    <!-- MediaPipe dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <!-- Matter.js for physics -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.18.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #000;
+            color: white;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        
+        .container {
+            position: relative;
+            width: 100%;
+            max-width: 1200px;
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            color: #e5a00d;
+            text-shadow: 0 0 10px rgba(229, 160, 13, 0.5);
+        }
+        
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-height: 80vh;
+            border-radius: 10px;
+            overflow: hidden;
+            background-color: #111;
+        }
+        
+        .input_video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror video */
+            opacity: 0;
+        }
+        
+        .output_canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror canvas */
+        }
+        
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 30px;
+            z-index: 10;
+            text-align: center;
+            font-size: 0.9rem;
+            max-width: 80%;
+            transition: opacity 0.5s ease;
+        }
+        
+        .button {
+            background-color: #e5a00d;
+            color: black;
+            border: none;
+            padding: 10px 20px;
+            margin: 20px 10px;
+            border-radius: 30px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .button:hover {
+            background-color: #f5b42e;
+            transform: scale(1.05);
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: center;
+            width: 100%;
+            margin-top: 20px;
+        }
+        
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2rem;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Thanos Snap Effect</h1>
+        <div class="video-container">
+            <video class="input_video"></video>
+            <canvas class="output_canvas"></canvas>
+            <div id="loading" class="loading">Loading hand tracking model...</div>
+            <div id="instructions">
+                Position your hand in frame and make a snapping gesture with your thumb and index finger
+            </div>
+        </div>
+        <div class="button-container">
+            <button id="snap-button" class="button">Manual Snap</button>
+            <button id="reset-button" class="button">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // Initialize global variables
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const canvasCtx = canvasElement.getContext('2d');
+        const instructionsElement = document.getElementById('instructions');
+        const loadingElement = document.getElementById('loading');
+        const snapButton = document.getElementById('snap-button');
+        const resetButton = document.getElementById('reset-button');
+        
+        let isModelReady = false;
+        let isSnapping = false;
+        let previousFingerDistance = 0;
+        let snapCooldown = false;
+        let handLandmarks = null;
+        let silhouetteImage = null;
+        let dustMode = false;
+        let particles = [];
+        
+        // Matter.js setup
+        const engine = Matter.Engine.create();
+        const world = engine.world;
+        world.gravity.y = 0.2;
+        
+        // Setup canvas size
+        function setupCanvas() {
+            const container = document.querySelector('.video-container');
+            const rect = container.getBoundingClientRect();
+            canvasElement.width = rect.width;
+            canvasElement.height = rect.height;
+        }
+        
+        // Initialize the setup
+        setupCanvas();
+        window.addEventListener('resize', setupCanvas);
+        
+        // MediaPipe Hands setup
+        const hands = new Hands({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
+        });
+        
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+        
+        // Start camera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        // Start camera after a slight delay to ensure DOM is ready
+        setTimeout(() => {
+            camera.start()
+                .then(() => {
+                    console.log("Camera started successfully");
+                    videoElement.style.opacity = "1";
+                })
+                .catch(error => {
+                    console.error("Error starting camera:", error);
+                    instructionsElement.textContent = "Camera error: Please make sure your browser has camera permissions.";
+                });
+        }, 500);
+        
+        // Main function to handle MediaPipe results
+        function onResults(results) {
+            if (!isModelReady) {
+                isModelReady = true;
+                loadingElement.style.display = 'none';
+            }
+            
+            // Clear canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (!dustMode) {
+                // Draw video feed
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                
+                // Create silhouette if there are hands
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    handLandmarks = results.multiHandLandmarks;
+                    createSilhouette(results);
+                    detectSnapGesture(results);
+                } else {
+                    handLandmarks = null;
+                }
+            } else {
+                // In dust mode, only update particles
+                updateParticles();
+            }
+            
+            canvasCtx.restore();
+        }
+        
+        // Create silhouette from hand landmarks
+        function createSilhouette(results) {
+            // Draw hand landmarks as filled shapes
+            for (const landmarks of results.multiHandLandmarks) {
+                // Draw hand connections
+                canvasCtx.lineWidth = 8;
+                canvasCtx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                
+                // Connect landmarks to form a hand shape
+                drawHandConnections(landmarks);
+                
+                // Draw large circles at each landmark
+                for (const landmark of landmarks) {
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(
+                        landmark.x * canvasElement.width,
+                        landmark.y * canvasElement.height,
+                        10, 0, 2 * Math.PI);
+                    canvasCtx.fill();
+                }
+            }
+            
+            // Store the current canvas as the silhouette image
+            silhouetteImage = canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height);
+        }
+        
+        // Draw connections between hand landmarks
+        function drawHandConnections(landmarks) {
+            // Define landmark connections for hand shape
+            const connections = [
+                // Thumb
+                [0, 1], [1, 2], [2, 3], [3, 4],
+                // Index finger
+                [0, 5], [5, 6], [6, 7], [7, 8],
+                // Middle finger
+                [0, 9], [9, 10], [10, 11], [11, 12],
+                // Ring finger
+                [0, 13], [13, 14], [14, 15], [15, 16],
+                // Pinky finger
+                [0, 17], [17, 18], [18, 19], [19, 20],
+                // Palm connections
+                [0, 5], [5, 9], [9, 13], [13, 17]
+            ];
+            
+            // Draw each connection
+            canvasCtx.beginPath();
+            for (const [i, j] of connections) {
+                const start = landmarks[i];
+                const end = landmarks[j];
+                
+                canvasCtx.moveTo(
+                    start.x * canvasElement.width,
+                    start.y * canvasElement.height
+                );
+                canvasCtx.lineTo(
+                    end.x * canvasElement.width,
+                    end.y * canvasElement.height
+                );
+            }
+            canvasCtx.stroke();
+            
+            // Fill palm area
+            canvasCtx.beginPath();
+            const palmPoints = [0, 5, 9, 13, 17].map(i => landmarks[i]);
+            canvasCtx.moveTo(
+                palmPoints[0].x * canvasElement.width,
+                palmPoints[0].y * canvasElement.height
+            );
+            for (let i = 1; i < palmPoints.length; i++) {
+                canvasCtx.lineTo(
+                    palmPoints[i].x * canvasElement.width,
+                    palmPoints[i].y * canvasElement.height
+                );
+            }
+            canvasCtx.fill();
+        }
+        
+        // Detect snap gesture
+        function detectSnapGesture(results) {
+            if (snapCooldown || !results.multiHandLandmarks || !results.multiHandLandmarks.length) {
+                return;
+            }
+            
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // Get thumb tip and index finger tip
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            
+            // Calculate distance between thumb and index finger
+            const distance = Math.hypot(
+                (thumbTip.x - indexTip.x) * canvasElement.width,
+                (thumbTip.y - indexTip.y) * canvasElement.height
+            );
+            
+            // Detect snap (finger distance suddenly becomes small)
+            if (previousFingerDistance > 0) {
+                if (previousFingerDistance > 50 && distance < 20) {
+                    console.log("Snap detected!");
+                    triggerDustEffect();
+                    
+                    // Set cooldown
+                    snapCooldown = true;
+                    setTimeout(() => {
+                        snapCooldown = false;
+                    }, 1000);
+                }
+            }
+            
+            // Store current distance for next frame
+            previousFingerDistance = distance;
+        }
+        
+        // Trigger dust effect
+        function triggerDustEffect() {
+            if (dustMode || !silhouetteImage) return;
+            
+            dustMode = true;
+            particles = [];
+            instructionsElement.style.opacity = '0';
+            
+            // Density of particles (lower = more particles)
+            const density = 8;
+            
+            // Create particles from silhouette
+            const pixelData = silhouetteImage.data;
+            
+            for (let y = 0; y < canvasElement.height; y += density) {
+                for (let x = 0; x < canvasElement.width; x += density) {
+                    const index = (y * canvasElement.width + x) * 4;
+                    
+                    // Check if this pixel is part of the silhouette (black with some opacity)
+                    if (pixelData[index] < 100 && pixelData[index + 3] > 100) {
+                        // Create a particle
+                        const particle = {
+                            x,
+                            y,
+                            size: Math.random() * 3 + 2,
+                            color: `rgba(0, 0, 0, ${Math.random() * 0.5 + 0.5})`,
+                            life: 255,
+                            body: Matter.Bodies.circle(x, y, Math.random() * 3 + 2, {
+                                friction: 0,
+                                restitution: 0.2,
+                                density: 0.001
+                            })
+                        };
+                        
+                        // Add initial velocity/force
+                        Matter.Body.applyForce(
+                            particle.body,
+                            { x: particle.body.position.x, y: particle.body.position.y },
+                            { 
+                                x: (Math.random() - 0.5) * 0.002, 
+                                y: Math.random() * -0.002 - 0.001 
+                            }
+                        );
+                        
+                        Matter.World.add(world, particle.body);
+                        particles.push(particle);
+                    }
+                }
+            }
+        }
+        
+        // Update and draw particles
+        function updateParticles() {
+            if (!dustMode) return;
+            
+            // Run physics engine
+            Matter.Engine.update(engine);
+            
+            // Clear canvas for particles
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Update and draw each particle
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                
+                // Update position from physics body
+                p.x = p.body.position.x;
+                p.y = p.body.position.y;
+                
+                // Reduce life
+                p.life -= 2;
+                
+                // Set opacity based on life
+                const opacity = p.life / 255;
+                
+                // Draw particle
+                canvasCtx.fillStyle = `rgba(0, 0, 0, ${opacity})`;
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                canvasCtx.fill();
+                
+                // Remove dead particles or those that have moved off-screen
+                if (p.life <= 0 || 
+                    p.y > canvasElement.height + 100 || 
+                    p.x < -100 || 
+                    p.x > canvasElement.width + 100) {
+                    Matter.World.remove(world, p.body);
+                    particles.splice(i, 1);
+                }
+            }
+            
+            // If all particles are gone, reset
+            if (particles.length === 0 && dustMode) {
+                resetEffect();
+            }
+        }
+        
+        // Reset effect
+        function resetEffect() {
+            // Remove all particles from physics world
+            for (let i = 0; i < particles.length; i++) {
+                Matter.World.remove(world, particles[i].body);
+            }
+            
+            // Clear particles array
+            particles = [];
+            dustMode = false;
+            instructionsElement.style.opacity = '1';
+        }
+        
+        // Button event listeners
+        snapButton.addEventListener('click', triggerDustEffect);
+        resetButton.addEventListener('click', resetEffect);
+        
+        // When model is ready
+        hands.onResults(() => {
+            if (!isModelReady) {
+                isModelReady = true;
+                loadingElement.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
